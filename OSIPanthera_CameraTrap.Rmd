@@ -1,0 +1,317 @@
+---
+title: "OSI Panthera, camera trap analyses"
+author: "Julie Rode, Claire Lambert, Lucile Marescot, Bastien Chaix, Julie Beesau, Suzanne Bastian, Anne-Lise Cabanat"
+date: '`r Sys.time()`'
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+  
+  <style>
+  /* Style the linenumber div */
+  
+  .linenumbers {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background-color: #EBEBEB;
+      text-align: center;
+    padding: 0px 3px;
+    font-family: monospace;
+    float: left;
+    position: absolute;
+    transform:translate(-125%);
+    font-size: inherit !important;
+  }
+
+<!--  https://stackoverflow.com/questions/34259171/how-can-i-implement-a-spoiler-quote-with-just-css -->
+  .spoiler, .spoiler > * { transition: color 0.5s, opacity 0.5s }
+.spoiler:not(:hover) { color: transparent }
+.spoiler:not(:hover) > * { opacity: 0 }
+/* fix weird transitions on Chrome: */
+  blockquote, blockquote > *:not(a) { color: black }
+</style>
+
+
+Here we will describe and analyze Snow Leopard detections from camera traps set in Kirghiztan from 2015-2019.
+Lucile Marescot wrote the script
+
+# 1 Data Import and formating 
+
+Here we load the required libraries  
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+library(showtext)
+library(readxl)
+library (plyr)
+library (tidyverse)
+library(egg)
+library(sf)
+library(ggsn)
+library(scatterpie)
+library(adehabitatHR)
+library(lubridate)
+```
+Here we import the necessary data, camera trap detections fill and Kyrgyzstan shapefile. We used the excel file named "Données_PP_Naryn_2016_2019" 
+
+Notice that I made some few change directly on the raw data. otherwise most of the formating is done directly in the script.  I reverse Longitude and Latitude in the excel sheet as the  label seemed to have been reversed (Only after I changed the columns names, that trap locations fell into Kirgizstan shpefile). 
+
+The long lat coordinates had sometimes two points .. or two comas ,, So I standardized all coordinates into the standard WGS84 long/lat format and made sure they were all ranging between  xmin: 69.27661 ymin: 39.17283 xmax: 80.28316 ymax: 43.23822 which corresponds to Kirgizstan Limits
+```{r message=FALSE, warning=FALSE}
+
+path<-"C:/Users/DELL/Documents/Documents/OSI/OSI Panthera"
+pathdata <- paste0(path, "/Données_PP_Naryn_2016_2019.xlsx")
+
+
+world <- st_read(paste0(path, "/countries.shp"))
+Kyrgyzstan <- world[world$NAME=="Kyrgyzstan",]
+
+
+sheetnames <- excel_sheets(paste0(path, "/Données_PP_Naryn_2016_2019.xlsx"))
+mylist <- lapply(excel_sheets(pathdata), read_excel, path = pathdata)
+
+# name the dataframes
+names(mylist) <- sheetnames
+
+```
+
+Here we create a function to duplicate info on camera trap ID, coordinates, Place and elevation for all missing cells. Basically the function aims at filling all the NA generated once we imported the excel file, which had a lot of merged cells. Then we take each sheet coresponding to the year of data collection and bind them into a list, then into a single data frame. 
+
+We also correct typos in SL.Names and on Latitude coordinates 41.39.93 or 41,39,93
+Convert the Day, month, year into date format and correct dates misrecorded as 2015
+
+Finally we determine the number of crossings per year 
+
+```{r message=FALSE, warning=FALSE}
+
+duplicateinfo<-function(x){
+  for(i in 2:nrow(x))
+  {
+    if(is.na(x$`N° trap camera`[i]))
+      x$`N° trap camera`[i]<-x$`N° trap camera`[i-1]
+    if(is.na(x$Place[i]))
+      x$Place[i]<-x$Place[i-1]
+    if(is.na(x$Longitude[i]))
+      x$Longitude[i]<-x$Longitude[i-1]
+    if(is.na(x$Latitude[i]))
+      x$Latitude[i]<-x$Latitude[i-1]
+    if(is.na(x$`Elevation (m)`[i]))
+      x$`Elevation (m)`[i]<-x$`Elevation (m)`[i-1]
+  }
+  
+  return(x)
+}
+
+newlist<-lapply(mylist, duplicateinfo)
+
+
+#put everything into a dataframe
+#df <- do.call(rbind.data.frame, newlist)
+df <- ldply (newlist, data.frame)
+
+#remove uncessariy colums
+#df<- df %>% select(-Behaviour...Observations)
+#Becarefull  many Longitude has two comas, might woth checking the GPS coordinate
+df$LongitudeOK<-df$Latitude
+df$Latitude<-df$Longitude
+df$Latitude<- str_replace(df$Latitude, ",39,", ".39")
+df$Latitude<- str_replace(df$Latitude, ".39.93", ".3993")
+
+df$Latitude<- str_replace(df$Latitude, ",", ".")
+
+df$Longitude<-df$LongitudeOK
+#converte date 
+df<-df %>% mutate(Day=as.numeric(str_replace(Day, "/",  "")), Month= as.numeric(str_replace(Month, "/",  "")), Year=as.numeric(str_replace(Year, "/",  "")))
+
+df$Year[7:22]<-2018
+df$D<-df$Day
+df$Day[7:22]<-df$Month[7:22]
+df$Month[7:22]<-df$D[7:22]
+
+
+df<- df %>% mutate(date=ymd(paste0(Year,"/", Month,"/", Day)))
+
+
+
+#Here for the pictures collected in 2019, I added 4 years and 43 days to any date recorded as 2015 (Based on the comments in red)
+df$date[which(df$.id=="2019" & year(df$date)==2015)] <-
+  df$date[which(df$.id=="2019" & year(df$date)==2015)] + 1503 
+
+# For those collected in 2017 I simply added 2 years assuming the winter day was correct
+df$date[which(df$.id=="2017" & year(df$date)==2015)] <-
+  df$date[which(df$.id=="2017" & year(df$date)==2015)] + 730 
+df$Year<-year(df$date)
+df$Year[7:22]<-2018
+
+df<- df %>% mutate(time=ymd_hms(Hour))
+df<- df %>% mutate(hours=hms(paste0(hour(Hour),"/", minute(Hour), "/", second(Hour))))
+
+
+df<- df %>% mutate(date_hour=(paste0(date,"_", hours)))
+#df<- df %>% mutate(date_hour=ymd_hms(date_hour))
+
+
+date(df$Hour)<-df$date
+
+df <- df %>% arrange(rev(desc(Hour)))
+
+# here, we determine the number of pictures taken per trap. Notice that all pictures taken within a 15min window count as a single shot.  
+picdet<-data.frame(Trap=NULL, Numpic=NULL)
+
+for(j in unique(df$N..trap.camera))
+{
+  df.sub<- df %>% filter(df$N..trap.camera==j)
+  df.sub <- df.sub %>% arrange(rev(desc(Hour)))
+  
+  inc<-0
+  inc2<-1
+
+  i<-1
+  while(i < nrow(df.sub))
+  {
+  
+      while(difftime(df.sub$Hour[i+inc2],df.sub$Hour[i], tz, units ="mins") <= 15)
+    {
+      inc2<-inc2+1
+      if((i+ inc2) > nrow(df.sub)) break
+    }  
+    inc <-inc +1
+    
+    i <- i + inc2 
+    
+    inc2<-1
+  }
+  picdet<-rbind(picdet, c(j,inc)) 
+}
+
+
+# correct typos on names 
+df$SL.Name[df$SL.Name=="Ayana "] <- "Ayana"
+
+df$SL.Name<- str_replace(df$SL.Name, "cub",  "Cub")
+df$SL.Name<- str_replace(df$SL.Name, "Illguiz",  "Ilguiz")
+df$SL.Name[df$SL.Name=="Cub a"] <- "Aika's 3 cub"
+df$SL.Name[df$SL.Name=="Cub b"] <- "Aika's 3 cub"
+df$SL.Name[df$SL.Name=="Cub c"] <- "Aika's 3 cub"
+df$SL.Name[df$SL.Name=="Cub b ou c"] <- "Aika's 3 cub"
+df$SL.Name[df$SL.Name=="Cub a,b ou c"] <- "Aika's 3 cub"
+df$SL.Name[df$SL.Name=="Cub a, b ou c"] <- "Aika's 3 cub"
+df$SL.Name[df$SL.Name=="Cub  a,b ou c"]<- "Aika's 3 cub"
+df$SL.Name[df$SL.Name=="Cub AY6"] <- "Ayana's 2 cubs"
+df$SL.Name[df$SL.Name=="Cub ay1"] <- "Ayana's 2 cubs"
+df$SL.Name[df$SL.Name=="Subadult NI"] <- "Ilguiz's cub"
+df$SL.Name[df$SL.Name=="Cub NI"]<- "Ilguiz's cub"
+
+df$Latitude<-as.numeric(df$Latitude)
+
+df$Longitude<-as.numeric(df$Longitude)
+
+
+```
+
+# 2 Mapping Data  
+
+
+We convert data frame into spatial data frame and start to visualize the spatial data.
+
+first, let's locate the study area in Kirgiztan
+```{r message=FALSE, warning=FALSE}
+
+df.sf<-st_as_sf(df, coords = c("Longitude", "Latitude"), crs = 4326)
+
+
+#plot(df.space)
+#df.sf<-as(df.space, "sf")
+
+ggplot() + geom_sf(data=Kyrgyzstan) + 
+  geom_sf(data=df.sf) +   north(Kyrgyzstan,  location = "topleft") +
+  scalebar(Kyrgyzstan, dist = 100, st.size=3, dist_unit = "km", transform = TRUE, model = "WGS84") +
+  coord_sf(crs = st_crs(Kyrgyzstan),  datum = NA) +
+  theme(
+    panel.ontop = FALSE,   ## Note: this is to make the panel grid visible in this example
+    panel.grid = element_blank(), 
+    line = element_blank(), 
+    rect = element_blank(), 
+    text = element_blank(), 
+    plot.background = element_rect(fill = "white")) + labs(colour="Camera trap")
+
+```
+
+Minimum Convex Polygon common estimators of the minimum home range size, but can potentially include area not used by the animal and overestimate the home range. Reversely, it can overlook some non detected area used by the animal. The function worked only for 3 individuals. There was not enough locations for the others.
+```{r message=FALSE, warning=FALSE}
+Panthera.sp <- df[, c("SL.Name", "Longitude", "Latitude")] 
+
+Panthera.sp <- Panthera.sp %>% filter(SL.Name=="Aika" | SL.Name=="Ayana" | SL.Name=="Naguima")  
+
+
+library(sp)
+coordinates(Panthera.sp) <- c("Longitude", "Latitude")
+
+# Set the coordinate reference system (CRS)
+# More information on CRS here: 
+# https://www.nceas.ucsb.edu/~frazier/RSpatialGuides/OverviewCoordinateReferenceSystems.pdf
+# The sample data are UTM points in WGS84 from zone 18N
+proj4string(Panthera.sp) <-  CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+
+# Calculate MCPs for each turtle
+Panthera.mcp <- mcp(Panthera.sp, percent = 100)
+
+# Examine output
+#Panthera.mcp
+
+# Plot
+library(scales) # Helps make polygons partly transparent using the alpha argument below
+#plot(Panthera.sp, col = as.factor(Panthera.sp@data$id), pch = 16)
+#plot(Panthera.mcp, col = alpha(1:5, 0.5), add = TRUE)
+
+#hrs <- mcp.area(Panthera.sp, percent = seq(50, 100, by = 5))
+
+
+Panthera.spgeo <- spTransform(Panthera.sp, CRS("+proj=longlat"))
+Panthera.mcpgeo <- spTransform(Panthera.mcp, CRS("+proj=longlat"))
+
+library(ggmap)
+
+mybasemap <- get_stamenmap(bbox = c(left = min(Panthera.spgeo@coords[,1])-0.005, 
+                                    bottom = min(Panthera.spgeo@coords[,2])-0.005, 
+                                    right = max(Panthera.spgeo@coords[,1])+0.005, 
+                                    top = max(Panthera.spgeo@coords[,2])+0.005), 
+                           zoom = 12)
+
+Panthera.geo <- data.frame(Panthera.spgeo@coords, id = Panthera.spgeo@data$SL.Name)
+
+mymap.hr <- ggmap(mybasemap) + 
+  geom_polygon(data = fortify(Panthera.mcpgeo),  
+               # Polygon layer needs to be "fortified" to add geometry to the dataframe
+              aes(long, lat, colour = id, fill=id),
+              alpha = 0.3) + # alpha sets the transparency
+  geom_point(data = Panthera.geo, 
+             aes(x = Longitude, y = Latitude, colour = id)) 
+
+mymap.hr +
+  theme(legend.position = "right") + 
+  labs(x = "Longitude", y = "Latitude", color = "Name", fill="Name")
+
+```
+
+
+
+Here we show the yearly trajectoy taken by each individual across traps. Unfortunatly we can not delimitate territories a Minimum convex Polygone for all individuals' territory as we only have fixed trap locations no GPS data. Probably something could be done if we combine with the genetic samples.  
+```{r message=FALSE, warning=FALSE}
+
+df$Year<-as.character(df$Year)
+
+
+df.filt.bis<-df %>% filter(SL.Name!="/" &  SL.Name!="Mishka" &  SL.Name!="Aida")   
+      
+ggmap(mybasemap)  +  geom_path(data=df.filt.bis, aes(x = Longitude, y = Latitude, group=Year, color = Year), size=1.1, arrow = arrow(angle=30,length=unit(0.1,"cm"), type="closed"))  + facet_wrap(~SL.Name) +   theme_classic()  + theme_classic() +  theme(axis.title.x = element_blank(), axis.title.y = element_blank(), axis.ticks.x = element_blank(), axis.ticks.y = element_blank(), axis.text=element_blank(), legend.position="right")   
+  
+  
+#ggsave("C:/Users/DELL/Documents/Documents/OSI/OSI Panthera/figures/fig_2.pdf", width = 8, height = 5, dpi=300)
+    
+```    
+    
+
+
+
+  
