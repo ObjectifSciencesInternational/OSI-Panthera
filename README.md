@@ -6,3 +6,6 @@ This is a camera-trap data analysis of four field seasons for the study of snow 
 
 ## Folder Genetics
 This is the scripts used for the genetic analysis. The study is developed in a coming article. 
+
+## Licence
+These scripts are distributed under the CeCILL licence.
